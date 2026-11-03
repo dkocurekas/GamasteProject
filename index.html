@@ -1,0 +1,1377 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Corner Dice</title>
+<style>
+  :root {
+    --bg: #f4f5f7;
+    --card: #ffffff;
+    --text: #1f2933;
+    --muted: #7b8794;
+    --accent: #3b5bdb;
+    --table: #e9ecef;
+    --border: #e4e7eb;
+    --notch: #f1f3f5;
+    --target: #f08c00;
+    --good: #2f9e44;
+    --bad: #e03131;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #15181d;
+      --card: #1f242b;
+      --text: #e4e7eb;
+      --muted: #9aa5b1;
+      --accent: #748ffc;
+      --table: #2a3038;
+      --border: #323941;
+      --notch: #2a3038;
+      --target: #ffa94d;
+      --good: #69db7c;
+      --bad: #ff8787;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg);
+    color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    padding: 16px;
+  }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 24px;
+    width: 100%;
+    max-width: 1000px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.06);
+  }
+
+  /* ---------- HUD ---------- */
+  .hud {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+  .hud .side { font-size: 0.875rem; color: var(--muted); }
+  .hud .side.right { text-align: right; }
+  .hud .side strong { color: var(--text); font-size: 1rem; }
+  .lives { display: flex; gap: 6px; color: var(--text); }
+  .lives svg { display: block; width: 28px; height: 26px; }
+  .lives .lost { opacity: 0.2; }
+  .speed { text-align: center; }
+  .speed .caption {
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+  }
+  .speed .value {
+    font-size: 2.75rem;
+    font-weight: 700;
+    line-height: 1;
+    color: var(--target);
+  }
+  .speed .unit { font-size: 1rem; font-weight: 600; margin-left: 4px; }
+  .speed .value.range { font-size: 2.1rem; }
+
+  /* Gear change that floats up from a slot when a die is used */
+  .float-num {
+    position: absolute;
+    font-size: 2.2rem;
+    font-weight: 800;
+    pointer-events: none;
+    text-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
+    animation: float-up 0.75s ease-out forwards;
+    color: var(--muted);
+  }
+  .float-num.up { color: var(--good); }
+  .float-num.down { color: var(--bad); }
+  /* Gear change a held die would make, shown above it while it hovers + or − */
+  .preview-num {
+    position: absolute;
+    font-size: 3.2rem;
+    font-weight: 900;
+    line-height: 1;
+    pointer-events: none;
+    /* Dark outline plus a soft shadow so the number reads over the white dice */
+    -webkit-text-stroke: 2px #1f2933;
+    paint-order: stroke fill;
+    text-shadow: 0 0 2px #1f2933, 0 3px 8px rgba(0, 0, 0, 0.6);
+    transform: translate(-50%, -100%);
+    color: var(--muted);
+  }
+  .preview-num.up { color: var(--good); }
+  .preview-num.down { color: var(--bad); }
+  .preview-num.burn { color: var(--target); }
+  @keyframes float-up {
+    0% { opacity: 0; transform: translate(-50%, -30%) scale(0.6); }
+    15% { opacity: 1; transform: translate(-50%, -50%) scale(1.15); }
+    100% { opacity: 0; transform: translate(-50%, -170%) scale(1); }
+  }
+  /* ---------- Road + table + gear stick ---------- */
+  .main {
+    display: grid;
+    grid-template-columns: 72px 1fr 130px;
+    gap: 16px;
+    margin-bottom: 16px;
+  }
+
+  /* Turns left: one road segment per turn, the road bending into the corner at the top */
+  .road {
+    display: flex;
+    flex-direction: column;
+    border-radius: 12px;
+    overflow: hidden;
+    background: #3a3f47;
+  }
+  .corner-turn {
+    display: block;
+    width: 100%;
+    height: auto;
+    flex-shrink: 0;
+  }
+  .lane {
+    position: relative;
+    flex: 1;
+    display: flex;
+    flex-direction: column-reverse;
+    border-left: 3px solid #e9ecef;
+    border-right: 3px solid #e9ecef;
+  }
+  .segment {
+    flex: 1;
+    border-top: 2px solid rgba(255, 255, 255, 0.18);
+    background: linear-gradient(#ffd43b, #ffd43b) center / 3px 45% no-repeat;
+    transition: background-color 0.3s;
+  }
+  .segment.done { background-color: rgba(0, 0, 0, 0.3); }
+  /* Where the car waits before the first turn of a corner */
+  .segment.start {
+    background: none;
+    border-top: 3px solid #fff;
+  }
+  .car {
+    position: absolute;
+    left: 50%;
+    width: 32px;
+    transform: translate(-50%, 50%);
+    transition: bottom 0.35s ease-in-out;
+  }
+  .car svg {
+    display: block;
+    width: 100%;
+    height: auto;
+    filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.45));
+  }
+
+  .table {
+    position: relative;
+    min-width: 0;
+    height: 480px;
+    background: var(--table);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  /* Course progress along the top edge of the table: one dot per corner */
+  .corner-dots {
+    position: absolute;
+    top: 12px;
+    left: 0;
+    right: 0;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 4px;
+    z-index: 1;
+    pointer-events: none;
+  }
+  /* Chevron drawn from two borders so it sits exactly on the dots' centre line */
+  .corner-dots .arrow {
+    width: 7px;
+    height: 7px;
+    margin: 0 2px 0 0;
+    border-top: 2px solid var(--muted);
+    border-right: 2px solid var(--muted);
+    transform: rotate(45deg);
+    opacity: 0.8;
+  }
+  .corner-dots .endpoint { font-size: 1rem; line-height: 1; }
+  .corner-dots .endpoint.start { margin-right: 2px; }
+  .corner-dots .endpoint.finish { margin-left: 2px; }
+  .corner-dots .dot {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--muted);
+    opacity: 0.4;
+    transition: background 0.3s, transform 0.3s, opacity 0.3s;
+  }
+  .corner-dots .current { background: var(--target); opacity: 1; transform: scale(1.3); }
+  .corner-dots .cleared { background: var(--good); opacity: 1; }
+  .corner-dots .missed { background: var(--bad); opacity: 1; }
+  .table canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    touch-action: none;
+  }
+  .gearbox {
+    width: 130px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+  }
+  .gearbox .caption {
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+  }
+  /* Gear shifter: knob on a metal shaft, coming out of a rubber boot */
+  .stick {
+    height: 118px;
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-end;
+    flex-shrink: 0;
+  }
+  .shifter {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    transform-origin: 50% 100%;
+    transition: transform 0.35s cubic-bezier(0.3, 1.6, 0.5, 1);
+    margin-bottom: -4px;
+    position: relative;
+    z-index: 1;
+  }
+  .knob {
+    width: 58px;
+    height: 62px;
+    border-radius: 50% 50% 44% 44%;
+    background:
+      radial-gradient(ellipse at 35% 25%, rgba(255, 255, 255, 0.35), transparent 45%),
+      radial-gradient(circle at 50% 40%, #3d4650, #15191e 75%);
+    color: #fff;
+    font-size: 1.75rem;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 5px 10px rgba(0, 0, 0, 0.3), inset 0 -4px 6px rgba(0, 0, 0, 0.4);
+    text-shadow: 0 1px 0 rgba(0, 0, 0, 0.6);
+  }
+  .collar {
+    width: 22px;
+    height: 7px;
+    border-radius: 0 0 4px 4px;
+    background: linear-gradient(90deg, #6b7480, #e9ecef, #6b7480);
+  }
+  .shaft {
+    width: 10px;
+    height: 30px;
+    background: linear-gradient(90deg, #5c6570, #d5d9de 45%, #5c6570);
+  }
+  .boot {
+    width: 66px;
+    height: 24px;
+    clip-path: polygon(32% 0, 68% 0, 100% 100%, 0 100%);
+    background: repeating-linear-gradient(180deg, #343a42 0 5px, #1c2026 5px 8px);
+  }
+  .knob.bump { animation: bump 0.35s ease-out; }
+  @keyframes bump {
+    0% { transform: scale(1); }
+    40% { transform: scale(1.15); }
+    100% { transform: scale(1); }
+  }
+  .notches {
+    display: flex;
+    flex-direction: column-reverse;
+    gap: 3px;
+    width: 100%;
+  }
+  .notch {
+    height: 26px;
+    border-radius: 6px;
+    background: var(--notch);
+    color: var(--muted);
+    font-size: 0.8rem;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 2px solid transparent;
+    transition: background 0.2s, color 0.2s;
+    gap: 6px;
+  }
+  .notch small { font-size: 0.65rem; font-weight: 500; opacity: 0.8; }
+  .notch.target { border-color: var(--target); color: var(--target); }
+  .notch.current { background: var(--accent); color: #fff; }
+  .notch.current.target { background: var(--good); border-color: var(--good); }
+  /* Gear a held die would shift to */
+  .notch.preview {
+    outline: 3px dashed var(--accent);
+    outline-offset: 1px;
+    transform: scale(1.06);
+  }
+  .notch.preview:not(.current) { background: rgba(59, 91, 219, 0.18); color: var(--text); }
+  .notch.preview.target:not(.current) { background: rgba(47, 158, 68, 0.22); outline-color: var(--good); }
+
+  /* What each die value does on + or − */
+  .legend {
+    margin: 0;
+    width: 100%;
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 2px 8px;
+    align-items: center;
+    font-size: 0.75rem;
+    color: var(--muted);
+  }
+  .legend dt { font-size: 1.15rem; line-height: 1; color: var(--text); text-align: right; }
+  .legend dd { margin: 0; }
+
+  @media (max-width: 560px) {
+    .main { grid-template-columns: 48px 1fr; }
+    .table { height: 300px; }
+    .car { width: 22px; }
+    .gearbox { grid-column: 1 / -1; width: 100%; flex-direction: row; }
+    .gearbox .caption { display: none; }
+    .stick { width: 72px; }
+    .notches { flex-direction: row; }
+    .legend { display: none; }
+    /* 12 dots plus arrows don't fit a phone-width table: smaller dots, no arrows */
+    .corner-dots { gap: 3px; }
+    .corner-dots .arrow { display: none; }
+    .corner-dots .dot { width: 8px; height: 8px; }
+    .corner-dots .endpoint { font-size: 0.8rem; }
+    .notch { flex: 1; height: 44px; flex-direction: column; gap: 0; }
+  }
+
+  /* ---------- Popup ---------- */
+  .popup {
+    position: fixed;
+    left: 50%;
+    top: 40%;
+    transform: translate(-50%, -50%) scale(0.8);
+    padding: 20px 36px;
+    border-radius: 16px;
+    color: #fff;
+    font-size: 1.75rem;
+    font-weight: 700;
+    text-align: center;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.3);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s, transform 0.25s cubic-bezier(0.3, 1.6, 0.5, 1);
+    z-index: 10;
+    max-width: calc(100vw - 32px);
+  }
+  .popup.show { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  .popup.good { background: #2f9e44; }
+  .popup.bad { background: #e03131; }
+  .popup.win {
+    background: linear-gradient(135deg, #f08c00, #e8590c);
+    font-size: 2.4rem;
+    padding: 28px 44px;
+  }
+  .confetti {
+    position: fixed;
+    top: -16px;
+    width: 8px;
+    height: 14px;
+    border-radius: 2px;
+    z-index: 11;
+    pointer-events: none;
+    animation: confetti-fall linear forwards;
+  }
+  @keyframes confetti-fall {
+    to { transform: translate(var(--dx), 105vh) rotate(720deg); }
+  }
+  .popup small { display: block; font-size: 0.95rem; font-weight: 500; margin-top: 4px; opacity: 0.9; }
+
+  /* ---------- Controls ---------- */
+  .status {
+    text-align: center;
+    min-height: 1.5em;
+    margin-bottom: 12px;
+    font-size: 0.95rem;
+  }
+  .status.good { color: var(--good); font-weight: 600; }
+  .status.bad { color: var(--bad); font-weight: 600; }
+  button {
+    width: 100%;
+    padding: 14px;
+    font-size: 1rem;
+    font-weight: 600;
+    color: #fff;
+    background: var(--accent);
+    border: none;
+    border-radius: 10px;
+    cursor: pointer;
+    transition: filter 0.15s, transform 0.05s, opacity 0.15s;
+  }
+  button:hover { filter: brightness(1.08); }
+  button:active { transform: scale(0.98); }
+  button:disabled { opacity: 0.5; cursor: default; filter: none; transform: none; }
+  [hidden] { display: none !important; }
+  .hint {
+    color: var(--muted);
+    font-size: 0.75rem;
+    margin-top: 10px;
+    text-align: center;
+  }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "cannon-es": "https://cdn.jsdelivr.net/npm/cannon-es@0.20.0/dist/cannon-es.js"
+  }
+}
+</script>
+</head>
+<body>
+  <main class="card">
+    <div class="hud">
+      <div class="side">
+        <div>Luck</div>
+        <div class="lives" id="lives"></div>
+      </div>
+      <div class="speed">
+        <div class="caption">Corner speed</div>
+        <div class="value"><span id="speed">–</span><span class="unit">km/h</span></div>
+      </div>
+      <div class="side right"></div>
+    </div>
+
+    <div class="main">
+      <div class="road" title="Turns left before the corner">
+        <!-- Road curving off to the right, tighter for slower corners; drawn by renderCorner() -->
+        <svg class="corner-turn" id="corner" viewBox="0 0 72 80" aria-hidden="true"></svg>
+        <div class="lane" id="lane">
+          <div class="car" id="car">
+            <svg viewBox="0 0 40 70" aria-hidden="true">
+              <rect x="0" y="10" width="7" height="14" rx="2" fill="#111"/>
+              <rect x="33" y="10" width="7" height="14" rx="2" fill="#111"/>
+              <rect x="0" y="46" width="7" height="14" rx="2" fill="#111"/>
+              <rect x="33" y="46" width="7" height="14" rx="2" fill="#111"/>
+              <rect x="4" y="2" width="32" height="66" rx="12" fill="#e03131"/>
+              <rect x="8" y="3" width="7" height="4" rx="2" fill="#ffe066"/>
+              <rect x="25" y="3" width="7" height="4" rx="2" fill="#ffe066"/>
+              <rect x="9" y="18" width="22" height="12" rx="4" fill="#1f2933"/>
+              <rect x="9" y="31" width="22" height="16" rx="3" fill="#c92a2a"/>
+              <rect x="10" y="48" width="20" height="8" rx="3" fill="#1f2933"/>
+            </svg>
+          </div>
+        </div>
+      </div>
+      <div class="table" id="table">
+        <div class="corner-dots" id="cornerDots" title="Corners on the course"></div>
+      </div>
+      <div class="gearbox">
+        <div class="caption">Gear</div>
+        <div class="stick">
+          <div class="shifter" id="shifter">
+            <div class="knob" id="knob">2</div>
+            <div class="collar"></div>
+            <div class="shaft"></div>
+          </div>
+          <div class="boot"></div>
+        </div>
+        <div class="notches" id="notches"></div>
+        <dl class="legend" title="Gears a die shifts on + or −">
+          <dt>⚀</dt><dd>±0 gears</dd>
+          <dt>⚁ ⚂</dt><dd>±1 gear</dd>
+          <dt>⚃ ⚄</dt><dd>±2 gears</dd>
+          <dt>⚅</dt><dd>±3 gears</dd>
+        </dl>
+      </div>
+    </div>
+
+    <div class="status" id="status"></div>
+    <button id="roll">Roll</button>
+    <button id="restart" hidden>Restart</button>
+    <div class="hint">Roll, then drag one die onto <b>+</b> and the other onto <b>−</b>. Once per corner you can <b>burn</b> a die instead. Hit the corner speed before the car reaches the corner. Get through all 12 corners to win.</div>
+  </main>
+  <div class="popup" id="popup" role="status"></div>
+
+<script type="module">
+  import * as THREE from "three";
+  import * as CANNON from "cannon-es";
+
+  // Pip positions on a 3x3 grid (row, col), 1-indexed
+  const PIPS = {
+    1: [[2, 2]],
+    2: [[1, 1], [3, 3]],
+    3: [[1, 1], [2, 2], [3, 3]],
+    4: [[1, 1], [1, 3], [3, 1], [3, 3]],
+    5: [[1, 1], [1, 3], [2, 2], [3, 1], [3, 3]],
+    6: [[1, 1], [1, 3], [2, 1], [2, 3], [3, 1], [3, 3]]
+  };
+
+  // Box face order in three.js is +x, -x, +y, -y, +z, -z.
+  // Opposite faces sum to 7, like a real die.
+  const FACE_VALUES = [1, 6, 2, 5, 3, 4];
+  const FACE_NORMALS = [
+    new CANNON.Vec3(1, 0, 0), new CANNON.Vec3(-1, 0, 0),
+    new CANNON.Vec3(0, 1, 0), new CANNON.Vec3(0, -1, 0),
+    new CANNON.Vec3(0, 0, 1), new CANNON.Vec3(0, 0, -1)
+  ];
+
+  // Dice roll in a walled area: x within ±ARENA_X, z from -ARENA_Z to DICE_WALL_Z.
+  // In front of that wall is the slot tray, which rolling dice can't reach.
+  const ARENA_X = 3.2;
+  const ARENA_Z = 2.2;
+  const DICE_WALL_Z = 0.9;
+  const SLOT_Z = 2.8;
+  const TRAY_FRONT_Z = 3.7;
+  const DIE_SIZE = 1;
+
+  const MIN_GEAR = 1;
+  const MAX_GEAR = 8;
+  const START_GEAR = 1;
+  const START_LIVES = 3;
+  const TOTAL_CORNERS = 12; // get through this many corners to win
+  const MAX_TURNS = 4;
+  const MAX_RANGE = 2; // widest target range, in gears
+  const TOP_SPEED = 250; // km/h in top gear
+
+  // Gear → km/h, linear up to TOP_SPEED in top gear, rounded to 5
+  const kmh = (g) => Math.round((g * TOP_SPEED) / MAX_GEAR / 5) * 5;
+
+  const container = document.getElementById("table");
+  const rollBtn = document.getElementById("roll");
+  const restartBtn = document.getElementById("restart");
+  const statusEl = document.getElementById("status");
+  const speedEl = document.getElementById("speed");
+  const laneEl = document.getElementById("lane");
+  const carEl = document.getElementById("car");
+  const cornerEl = document.getElementById("corner");
+  const livesEl = document.getElementById("lives");
+  const cornerDotsEl = document.getElementById("cornerDots");
+  const knobEl = document.getElementById("knob");
+  const shifterEl = document.getElementById("shifter");
+  const notchesEl = document.getElementById("notches");
+  const popupEl = document.getElementById("popup");
+
+  const notchEls = [];
+  for (let g = MIN_GEAR; g <= MAX_GEAR; g++) {
+    const el = document.createElement("div");
+    el.className = "notch";
+    el.innerHTML = `<b>${g}</b><small>${kmh(g)}</small>`;
+    notchesEl.appendChild(el);
+    notchEls.push(el);
+  }
+
+  // ---------- Rendering ----------
+  const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  container.appendChild(renderer.domElement);
+
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 100);
+  camera.position.set(0, 9, 6.5);
+  camera.lookAt(0, 0, 0.3);
+
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x888888, 1.2));
+  const sun = new THREE.DirectionalLight(0xffffff, 2);
+  sun.position.set(3, 8, 4);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(1024, 1024);
+  Object.assign(sun.shadow.camera, { left: -5, right: 5, top: 5, bottom: -5 });
+  scene.add(sun);
+
+  // Floor only shows shadows; the table colour comes from CSS
+  const floor = new THREE.Mesh(
+    new THREE.PlaneGeometry(20, 20),
+    new THREE.ShadowMaterial({ opacity: 0.25 })
+  );
+  floor.rotation.x = -Math.PI / 2;
+  floor.receiveShadow = true;
+  scene.add(floor);
+
+  function faceTexture(value) {
+    const size = 256;
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = size;
+    const g = canvas.getContext("2d");
+    g.fillStyle = "#fbfbfb";
+    g.fillRect(0, 0, size, size);
+    g.strokeStyle = "#d5d9de";
+    g.lineWidth = 10;
+    g.strokeRect(0, 0, size, size);
+    g.fillStyle = "#1f2933";
+    for (const [row, col] of PIPS[value]) {
+      g.beginPath();
+      g.arc(col * 64, row * 64, 22, 0, Math.PI * 2);
+      g.fill();
+    }
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+    return tex;
+  }
+
+  // Drawn in white so the material colour can tint it per state
+  function slotTexture(symbol, label) {
+    const size = 256;
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = size;
+    const g = canvas.getContext("2d");
+    g.fillStyle = "rgba(255, 255, 255, 0.18)";
+    g.strokeStyle = "#fff";
+    g.lineWidth = 10;
+    g.setLineDash([22, 14]);
+    g.beginPath();
+    g.roundRect(8, 8, size - 16, size - 16, 36);
+    g.fill();
+    g.stroke();
+    g.fillStyle = "#fff";
+    g.textAlign = "center";
+    g.textBaseline = "middle";
+    g.font = "bold 130px system-ui, sans-serif";
+    g.fillText(symbol, size / 2, size / 2 - 14);
+    g.font = "bold 34px system-ui, sans-serif";
+    g.fillText(label, size / 2, size - 42);
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+    return tex;
+  }
+
+  const dieMaterials = FACE_VALUES.map(
+    (v) => new THREE.MeshStandardMaterial({ map: faceTexture(v), roughness: 0.45 })
+  );
+  const dieGeometry = new THREE.BoxGeometry(DIE_SIZE, DIE_SIZE, DIE_SIZE);
+
+  // ---------- Slots ----------
+  const SLOT_SIZE = 1.4;
+  const SLOT_REACH = 0.85; // how close a dropped die must be to a slot centre
+  const SLOT_COLORS = { hover: 0x2f9e44, used: 0x9aa5b1 };
+
+  const slots = [
+    { kind: "down", x: -2, z: SLOT_Z, symbol: "−", label: "DOWN", name: "−", color: 0x3b5bdb },
+    { kind: "burn", x: 0, z: SLOT_Z, symbol: "✕", label: "BURN (1)", name: "BURN", color: 0xf08c00 },
+    { kind: "up", x: 2, z: SLOT_Z, symbol: "+", label: "UP", name: "+", color: 0x3b5bdb }
+  ].map((s) => {
+    const material = new THREE.MeshBasicMaterial({
+      map: slotTexture(s.symbol, s.label),
+      transparent: true,
+      depthWrite: false
+    });
+    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(SLOT_SIZE, SLOT_SIZE), material);
+    mesh.rotation.x = -Math.PI / 2;
+    mesh.position.set(s.x, 0.001, s.z);
+    mesh.renderOrder = -1; // draw before the shadow floor so shadows fall on it
+    scene.add(mesh);
+    return { ...s, mesh, die: null, hover: false };
+  });
+
+  // Slightly darker strip marking the slot tray in front of the dice wall
+  const tray = new THREE.Mesh(
+    new THREE.PlaneGeometry(ARENA_X * 2, TRAY_FRONT_Z - DICE_WALL_Z),
+    new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.07, depthWrite: false })
+  );
+  tray.rotation.x = -Math.PI / 2;
+  tray.position.set(0, 0.0005, (DICE_WALL_Z + TRAY_FRONT_Z) / 2);
+  tray.renderOrder = -2;
+  scene.add(tray);
+
+  // Burn label carries the uses left this corner; redraw its texture when that changes
+  function setBurnLabel(slot, usesLeft) {
+    const label = `BURN (${usesLeft})`;
+    if (slot.label === label) return;
+    slot.label = label;
+    slot.mesh.material.map.dispose();
+    slot.mesh.material.map = slotTexture(slot.symbol, label);
+  }
+
+  // Slots only appear once dice have been rolled and are waiting to be placed
+  function paintSlots() {
+    const visible = phase === "place" || phase === "resolve";
+    for (const slot of slots) {
+      slot.mesh.visible = visible;
+      // A burn spent earlier this corner stays on the table, greyed out, until the next corner
+      const spent = slot.kind === "burn" && burnUsed;
+      if (slot.kind === "burn") setBurnLabel(slot, spent ? 0 : 1);
+      const state = slot.die || spent ? "used" : slot.hover ? "hover" : "idle";
+      slot.mesh.material.color.setHex(state === "idle" ? slot.color : SLOT_COLORS[state]);
+      slot.mesh.material.opacity = state === "used" ? 0.45 : 0.9;
+    }
+  }
+
+  const slotOpen = (slot) => !slot.die && !(slot.kind === "burn" && burnUsed);
+
+  function freeSlotNear(x, z) {
+    return slots.find((s) => slotOpen(s) && Math.hypot(s.x - x, s.z - z) < SLOT_REACH);
+  }
+
+  // ---------- Physics ----------
+  const world = new CANNON.World({ gravity: new CANNON.Vec3(0, -30, 0) });
+  world.allowSleep = true;
+
+  const tableMat = new CANNON.Material("table");
+  const diceMat = new CANNON.Material("dice");
+  world.addContactMaterial(new CANNON.ContactMaterial(tableMat, diceMat, { friction: 0.3, restitution: 0.45 }));
+  world.addContactMaterial(new CANNON.ContactMaterial(diceMat, diceMat, { friction: 0.2, restitution: 0.4 }));
+
+  // Floor plus four walls, each a plane facing inward. The front wall keeps dice off the slot tray.
+  const planes = [
+    { pos: [0, 0, 0], rot: [-Math.PI / 2, 0, 0] },
+    { pos: [-ARENA_X, 0, 0], rot: [0, Math.PI / 2, 0] },
+    { pos: [ARENA_X, 0, 0], rot: [0, -Math.PI / 2, 0] },
+    { pos: [0, 0, -ARENA_Z], rot: [0, 0, 0] },
+    { pos: [0, 0, DICE_WALL_Z], rot: [0, Math.PI, 0] }
+  ];
+  for (const p of planes) {
+    const body = new CANNON.Body({ mass: 0, material: tableMat, shape: new CANNON.Plane() });
+    body.position.set(...p.pos);
+    body.quaternion.setFromEuler(...p.rot);
+    world.addBody(body);
+  }
+
+  const DICE_START_X = [-0.9, 0.9];
+  const dice = DICE_START_X.map((x) => {
+    // Own copies of the materials so one die can be tinted on its own
+    const materials = dieMaterials.map((m) => {
+      const copy = m.clone();
+      copy.emissive.setHex(0xffd43b);
+      copy.emissiveIntensity = 0;
+      return copy;
+    });
+    const mesh = new THREE.Mesh(dieGeometry, materials);
+    mesh.castShadow = true;
+    scene.add(mesh);
+
+    const half = DIE_SIZE / 2;
+    const body = new CANNON.Body({
+      mass: 1,
+      material: diceMat,
+      shape: new CANNON.Box(new CANNON.Vec3(half, half, half)),
+      sleepSpeedLimit: 0.25,
+      sleepTimeLimit: 0.15
+    });
+    body.position.set(x, half, -0.8);
+    body.quaternion.setFromEuler(0, 0, Math.PI / 2); // start with 1 facing up
+    world.addBody(body);
+    return { mesh, body, materials, value: 1, slot: null, inWorld: true, vanish: null };
+  });
+
+  const WHITE = new THREE.Color(0xffffff);
+  const BURN_YELLOW = new THREE.Color(0xffd43b);
+
+  // Shrink a used die away; burned dice glow yellow first
+  function animateVanish(die, now) {
+    const { start, ms, burn } = die.vanish;
+    const t = Math.min((now - start) / ms, 1);
+    const shrinkFrom = burn ? 0.4 : 0;
+    const s = t < shrinkFrom ? 0 : (t - shrinkFrom) / (1 - shrinkFrom);
+    die.mesh.scale.setScalar(Math.max(1 - s * s, 0.001));
+    if (burn) {
+      const glow = Math.min(t / shrinkFrom, 1);
+      for (const m of die.materials) {
+        m.color.lerpColors(WHITE, BURN_YELLOW, glow);
+        m.emissiveIntensity = glow * 0.8;
+      }
+    }
+    if (t === 1) {
+      die.mesh.visible = false;
+      die.vanish = null;
+    }
+  }
+
+  function restoreDie(die, i) {
+    die.vanish = null;
+    die.mesh.visible = true;
+    die.mesh.scale.setScalar(1);
+    for (const m of die.materials) {
+      m.color.copy(WHITE);
+      m.emissiveIntensity = 0;
+    }
+    if (!die.inWorld) {
+      const { body } = die;
+      body.position.set(DICE_START_X[i], DIE_SIZE / 2, DICE_WALL_Z - 0.8);
+      body.quaternion.setFromEuler(rand(0, 6.3), rand(0, 6.3), rand(0, 6.3));
+      world.addBody(body);
+      die.inWorld = true;
+    }
+  }
+
+  // Index into FACE_VALUES / FACE_NORMALS of the face pointing most upward
+  function topIndex(body) {
+    let best = 0, bestY = -Infinity;
+    FACE_NORMALS.forEach((n, i) => {
+      const y = body.quaternion.vmult(n).y;
+      if (y > bestY) { bestY = y; best = i; }
+    });
+    return best;
+  }
+
+  // ---------- Dragging ----------
+  const HOVER_Y = 1.7; // height a held die floats at, clear of the other die
+  const canvas = renderer.domElement;
+  const raycaster = new THREE.Raycaster();
+  const pointer = new THREE.Vector2();
+  const hoverPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -HOVER_Y);
+  const UP = new CANNON.Vec3(0, 1, 0);
+  const clampX = (x) => THREE.MathUtils.clamp(x, -ARENA_X + 0.6, ARENA_X - 0.6);
+  // Held dice can be carried over the wall to the slots; dice set down stay behind it
+  const clampZ = (z) => THREE.MathUtils.clamp(z, -ARENA_Z + 0.6, SLOT_Z + 0.4);
+  const clampRestZ = (z) => THREE.MathUtils.clamp(z, -ARENA_Z + 0.6, DICE_WALL_Z - 0.6);
+  let drag = null; // { die, offset, target }
+
+  const canDrag = (die) => phase === "place" && !die.slot;
+
+  function setPointer(e) {
+    const r = canvas.getBoundingClientRect();
+    pointer.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+    raycaster.setFromCamera(pointer, camera);
+  }
+
+  function pickDie() {
+    const meshes = dice.filter((d) => d.mesh.visible).map((d) => d.mesh);
+    const hit = raycaster.intersectObjects(meshes)[0];
+    return hit && dice.find((d) => d.mesh === hit.object);
+  }
+
+  function hoverPoint() {
+    return raycaster.ray.intersectPlane(hoverPlane, new THREE.Vector3());
+  }
+
+  canvas.addEventListener("pointerdown", (e) => {
+    setPointer(e);
+    const die = pickDie();
+    const point = hoverPoint();
+    if (!die || !point || !canDrag(die)) return;
+    canvas.setPointerCapture(e.pointerId);
+
+    // Kinematic while held: we steer it, physics doesn't spin or drop it
+    const { body } = die;
+    body.type = CANNON.Body.KINEMATIC;
+    body.allowSleep = false;
+    body.wakeUp();
+    body.angularVelocity.setZero();
+
+    drag = {
+      die,
+      offset: { x: body.position.x - point.x, z: body.position.z - point.z },
+      target: new CANNON.Vec3(body.position.x, HOVER_Y, body.position.z)
+    };
+    canvas.style.cursor = "grabbing";
+  });
+
+  canvas.addEventListener("pointermove", (e) => {
+    setPointer(e);
+    if (!drag) {
+      const die = pickDie();
+      canvas.style.cursor = die && canDrag(die) ? "grab" : "";
+      return;
+    }
+    const point = hoverPoint();
+    if (!point) return;
+    drag.target.x = clampX(point.x + drag.offset.x);
+    drag.target.z = clampZ(point.z + drag.offset.z);
+
+    const near = freeSlotNear(drag.target.x, drag.target.z);
+    for (const slot of slots) slot.hover = slot === near;
+    paintSlots();
+    showPreview(near, drag.die);
+  });
+
+  // Number above the held die showing the gear change it would make on the hovered slot,
+  // or an orange ✕ over the burn slot
+  const previewEl = document.createElement("div");
+  previewEl.hidden = true;
+  container.appendChild(previewEl);
+
+  function showPreview(slot, die) {
+    if (!slot) {
+      previewEl.hidden = true;
+      markPreviewGear(null);
+      return;
+    }
+    if (slot.kind === "burn") {
+      markPreviewGear(null);
+      previewEl.className = "preview-num burn";
+      previewEl.textContent = "✕";
+      previewEl.hidden = false;
+      return;
+    }
+    const after = THREE.MathUtils.clamp(gear + gearDelta(slot.kind, die.value), MIN_GEAR, MAX_GEAR);
+    const change = after - gear;
+    markPreviewGear(after);
+    previewEl.className = "preview-num " + (change > 0 ? "up" : change < 0 ? "down" : "");
+    previewEl.textContent = change > 0 ? `+${change}` : change < 0 ? `−${-change}` : "0";
+    previewEl.hidden = false;
+  }
+
+  // Highlight the gear notch the held die would shift to (null clears it)
+  function markPreviewGear(g) {
+    notchEls.forEach((el, i) => el.classList.toggle("preview", MIN_GEAR + i === g));
+  }
+
+  function placePreview() {
+    if (previewEl.hidden || !drag) return;
+    const p = drag.die.mesh.position.clone().add(new THREE.Vector3(0, DIE_SIZE * 0.8, 0)).project(camera);
+    previewEl.style.left = ((p.x + 1) / 2) * 100 + "%";
+    previewEl.style.top = ((1 - p.y) / 2) * 100 + "%";
+  }
+
+  function release() {
+    if (!drag) return;
+    const { die, target } = drag;
+    const { body } = die;
+    body.type = CANNON.Body.DYNAMIC;
+    body.allowSleep = true;
+    body.wakeUp();
+    drag = null;
+    canvas.style.cursor = "";
+    for (const slot of slots) slot.hover = false;
+    previewEl.hidden = true;
+    markPreviewGear(null);
+
+    const slot = freeSlotNear(target.x, target.z);
+    if (slot) placeInSlot(die, slot);
+    else setDown(die);
+    paintSlots();
+  }
+  canvas.addEventListener("pointerup", release);
+  canvas.addEventListener("pointercancel", release);
+
+  // Rotate the die so its current top face points straight up, keeping the same value
+  function squareUp(body) {
+    const up = body.quaternion.vmult(FACE_NORMALS[topIndex(body)]);
+    body.quaternion.copy(new CANNON.Quaternion().setFromVectors(up, UP).mult(body.quaternion));
+    body.velocity.setZero();
+    body.angularVelocity.setZero();
+  }
+
+  // Square the die up and drop it straight down, clear of the other die
+  function setDown({ body }) {
+    squareUp(body);
+    body.position.z = clampRestZ(body.position.z);
+    const otherDie = dice.find((d) => d.body !== body);
+    if (!otherDie.inWorld) return;
+    const other = otherDie.body;
+    let dx = body.position.x - other.position.x;
+    let dz = body.position.z - other.position.z;
+    const dist = Math.hypot(dx, dz);
+    const minDist = DIE_SIZE * 1.5;
+    if (dist < minDist) {
+      if (dist < 1e-3) { dx = 1; dz = 0; } else { dx /= dist; dz /= dist; }
+      body.position.x = clampX(other.position.x + dx * minDist);
+      body.position.z = clampRestZ(other.position.z + dz * minDist);
+    }
+  }
+
+  // ---------- Game ----------
+  const rand = (min, max) => min + Math.random() * (max - min);
+  const randInt = (min, max) => Math.floor(rand(min, max + 1));
+
+  let phase = "roll"; // roll → rolling → place → resolve → roll …, or over
+  let gear, target, lives, cleared, turnsTotal, turnsLeft;
+  let results = []; // "cleared" or "missed" for each corner driven so far
+  let burnUsed = false; // the burn slot works once per corner
+  let carReset = false; // new corner: snap the car back instead of driving it backwards
+  let rollStarted = 0;
+
+  // A 1 does nothing, a 2–3 shifts 1 gear, a 4–5 shifts 2, a 6 shifts 3; the slot decides the direction
+  function gearDelta(kind, die) {
+    const step = die === 6 ? 3 : die >= 4 ? 2 : die >= 2 ? 1 : 0;
+    return kind === "up" ? step : -step;
+  }
+
+  const inTarget = (g) => g >= target.lo && g <= target.hi;
+  const speedText = (lo, hi) => (lo === hi ? `${kmh(lo)}` : `${kmh(lo)}–${kmh(hi)}`);
+
+  // Target is a range of up to MAX_RANGE gears; wide ranges get rarer further into the race.
+  // It never contains the current gear (or the corner would be cleared before it starts).
+  // Its distance from the current gear grows linearly from FIRST_GAP at the first corner to
+  // LAST_GAP at the last, capped at what the corner's turns can reach (a turn nets at most ±3).
+  const FIRST_GAP = 1;
+  const LAST_GAP = 5;
+
+  function pickNextTarget(currentGear, cornerIndex, turns, prev) {
+    const progress = cornerIndex / (TOTAL_CORNERS - 1);
+    const widenChance = Math.max(0.1, 0.7 - progress * 0.6);
+    let width = 1;
+    while (width < MAX_RANGE && Math.random() < widenChance) width++;
+
+    const gapTo = (lo, hi) => (currentGear < lo ? lo - currentGear : currentGear > hi ? currentGear - hi : 0);
+    let ranges = [];
+    for (let lo = MIN_GEAR; lo + width - 1 <= MAX_GEAR; lo++) {
+      const hi = lo + width - 1;
+      const gap = gapTo(lo, hi);
+      if (gap > 0) ranges.push({ lo, hi, gap });
+    }
+    const fresh = ranges.filter((r) => !prev || r.lo !== prev.lo || r.hi !== prev.hi);
+    if (fresh.length) ranges = fresh;
+
+    // Closest available distance to the one wanted for this corner
+    const wanted = Math.min(Math.round(FIRST_GAP + (LAST_GAP - FIRST_GAP) * progress), turns * 3);
+    const miss = (r) => Math.abs(r.gap - wanted);
+    const best = Math.min(...ranges.map(miss));
+    const options = ranges.filter((r) => miss(r) === best);
+    const { lo, hi } = options[randInt(0, options.length - 1)];
+    return { lo, hi };
+  }
+
+  function floatNumber(slot, change) {
+    const p = new THREE.Vector3(slot.x, DIE_SIZE / 2, slot.z).project(camera);
+    const el = document.createElement("div");
+    el.className = "float-num " + (change > 0 ? "up" : change < 0 ? "down" : "");
+    el.textContent = change > 0 ? `+${change}` : change < 0 ? `−${-change}` : "0";
+    el.style.left = ((p.x + 1) / 2) * 100 + "%";
+    el.style.top = ((1 - p.y) / 2) * 100 + "%";
+    container.appendChild(el);
+    el.addEventListener("animationend", () => el.remove());
+  }
+
+  function setStatus(text, tone = "") {
+    statusEl.textContent = text;
+    statusEl.className = "status " + tone;
+  }
+
+  // Dashboard-style skid warning light (like a stability control lamp): car from behind over two S-shaped skid marks
+  const CRASH_ICON = `<svg viewBox="0 0 28 26" aria-hidden="true" fill="currentColor">
+    <path fill-rule="evenodd" d="M6 8L8 3.2Q8.4 2.5 9.2 2.5H18.8Q19.6 2.5 20 3.2L22 8H23Q25 8 25 10V14.5H3V10Q3 8 5 8Z
+      M9.6 4.2H18.4L19.8 7.6H8.2Z M5 10H8.5V11.8H5Z M19.5 10H23V11.8H19.5Z"/>
+    <rect x="4" y="14" width="4" height="3.5" rx="1"/>
+    <rect x="20" y="14" width="4" height="3.5" rx="1"/>
+    <path d="M7.5 25C4.5 22.8 10.5 21.7 7.5 19.5M20.5 25C17.5 22.8 23.5 21.7 20.5 19.5"
+      fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+  </svg>`;
+
+  let popupTimer;
+  function showPopup(title, detail, tone, ms = 1100) {
+    popupEl.innerHTML = `${title}<small>${detail}</small>`;
+    popupEl.className = `popup ${tone} show`;
+    clearTimeout(popupTimer);
+    popupTimer = setTimeout(() => popupEl.classList.remove("show"), ms);
+  }
+
+  // Burst of confetti falling over the page for the win
+  const CONFETTI_COLORS = ["#f08c00", "#2f9e44", "#3b5bdb", "#e03131", "#ffd43b", "#ffffff"];
+  function confetti() {
+    for (let i = 0; i < 90; i++) {
+      const el = document.createElement("div");
+      el.className = "confetti";
+      el.style.left = rand(0, 100) + "vw";
+      el.style.background = CONFETTI_COLORS[i % CONFETTI_COLORS.length];
+      el.style.setProperty("--dx", rand(-80, 80) + "px");
+      el.style.animationDuration = rand(2.2, 3.8) + "s";
+      el.style.animationDelay = rand(0, 0.6) + "s";
+      document.body.appendChild(el);
+      el.addEventListener("animationend", () => el.remove());
+    }
+  }
+
+  function render() {
+    speedEl.textContent = speedText(target.lo, target.hi);
+    speedEl.parentElement.classList.toggle("range", target.lo !== target.hi);
+    // Start light → dots joined by small arrows → finish flag
+    const dots = Array.from({ length: TOTAL_CORNERS },
+      (_, i) => `<span class="dot ${results[i] || (i === results.length ? "current" : "")}"></span>`);
+    const arrow = `<span class="arrow"></span>`;
+    cornerDotsEl.innerHTML = `<span class="endpoint start">🚦</span>${arrow}`
+      + dots.join(arrow)
+      + `${arrow}<span class="endpoint finish">🏁</span>`;
+    livesEl.innerHTML = Array.from({ length: START_LIVES },
+      (_, i) => `<span class="${i < lives ? "" : "lost"}">${CRASH_ICON}</span>`).join("");
+    renderRoad();
+    renderCorner();
+    knobEl.textContent = gear;
+    shifterEl.style.transform = `rotate(${(gear - (MIN_GEAR + MAX_GEAR) / 2) * 5}deg)`;
+    notchEls.forEach((el, i) => {
+      const g = MIN_GEAR + i;
+      el.classList.toggle("current", g === gear);
+      el.classList.toggle("target", inTarget(g));
+    });
+    rollBtn.disabled = phase !== "roll";
+    rollBtn.hidden = phase === "over";
+    restartBtn.hidden = phase !== "over";
+    paintSlots();
+  }
+
+  function renderRoad() {
+    // Segment 0 is the start line; 1..turnsTotal are the turns
+    let segments = laneEl.querySelectorAll(".segment");
+    if (segments.length !== turnsTotal + 1) {
+      segments.forEach((s) => s.remove());
+      for (let i = 0; i <= turnsTotal; i++) {
+        const seg = document.createElement("div");
+        seg.className = i === 0 ? "segment start" : "segment";
+        laneEl.appendChild(seg);
+      }
+      segments = laneEl.querySelectorAll(".segment");
+    }
+    const used = turnsTotal - turnsLeft;
+    segments.forEach((s, i) => s.classList.toggle("done", i > 0 && i <= used));
+
+    // The car waits a segment back and drives into the next one when the dice are rolled
+    const inTurn = phase === "rolling" || phase === "place" || phase === "resolve";
+    const at = used + (inTurn ? 1 : 0);
+    carEl.style.bottom = ((at + 0.5) / segments.length) * 100 + "%";
+    if (carReset) {
+      carEl.style.transition = "none";
+      void carEl.offsetWidth; // apply the jump before re-enabling the transition
+      carEl.style.transition = "";
+      carReset = false;
+    }
+  }
+
+  // The road bends right at the top of the lane. Slow corners are tight hairpins,
+  // fast ones a gentle sweep: the bend radius grows with the target gear.
+  const CORNER_W = 72;
+  const CORNER_H = 80;
+  const BEND_TIGHT = 12; // centreline radius in the lowest gear (inner edge is a point)
+  const BEND_WIDE = 170; // centreline radius in top gear
+  let cornerKey = "";
+
+  function renderCorner() {
+    const g = (target.lo + target.hi) / 2;
+    const t = (g - MIN_GEAR) / (MAX_GEAR - MIN_GEAR);
+    const r = BEND_TIGHT * Math.pow(BEND_WIDE / BEND_TIGHT, t);
+    const key = r.toFixed(1);
+    if (key === cornerKey) return;
+    cornerKey = key;
+
+    // Centreline runs up the middle, then turns 90° right around (cx, y0) and leaves the picture
+    const half = CORNER_W / 2;
+    const y0 = 70;
+    const cx = half + r;
+    const road = `M${half} ${CORNER_H + 4}V${y0}A${r} ${r} 0 0 1 ${cx} ${y0 - r}H${cx + 200}`;
+
+    // Chevron sign on the grass, only when the bend leaves room for it
+    const outer = r + half;
+    const grassAt15 = cx - Math.sqrt(Math.max(outer * outer - (y0 - 15) ** 2, 0));
+    const sign = grassAt15 > 20
+      ? `<rect x="3" y="5" width="14" height="10" rx="1.5" fill="#ffd43b"/>
+         <path d="M7.5 7.5L12 10L7.5 12.5" fill="none" stroke="#1f2933" stroke-width="2.2"/>`
+      : "";
+
+    cornerEl.innerHTML = `
+      <rect width="${CORNER_W}" height="${CORNER_H}" fill="#5c940d"/>
+      <path d="${road}" fill="none" stroke="#e9ecef" stroke-width="${CORNER_W}"/>
+      <path d="${road}" fill="none" stroke="#3a3f47" stroke-width="${CORNER_W - 6}"/>
+      <path d="${road}" fill="none" stroke="#ffd43b" stroke-width="3" stroke-dasharray="9 7"/>
+      ${sign}`;
+  }
+
+  function bumpKnob() {
+    knobEl.classList.remove("bump");
+    void knobEl.offsetWidth; // restart animation
+    knobEl.classList.add("bump");
+  }
+
+  function nextCorner() {
+    // Turns drop linearly over the race: MAX_TURNS at the first corner down to 1 at the last
+    const progress = results.length / (TOTAL_CORNERS - 1);
+    turnsTotal = turnsLeft = Math.round(MAX_TURNS - (MAX_TURNS - 1) * progress);
+    target = pickNextTarget(gear, results.length, turnsTotal, target);
+    burnUsed = false;
+    carReset = true;
+  }
+
+  function clearSlots() {
+    for (const slot of slots) slot.die = null;
+    for (const die of dice) die.slot = null;
+  }
+
+  // A new race starts with an empty table; the first roll throws the dice in
+  function removeDice() {
+    for (const die of dice) {
+      if (die.inWorld) world.removeBody(die.body);
+      die.inWorld = false;
+      die.vanish = null;
+      die.mesh.visible = false;
+    }
+  }
+
+  function restart() {
+    gear = START_GEAR;
+    lives = START_LIVES;
+    cleared = 0;
+    results = [];
+    removeDice();
+    target = null;
+    popupEl.classList.remove("show");
+    clearSlots();
+    nextCorner();
+    phase = "roll";
+    setStatus("New race. Roll the dice!");
+    render();
+  }
+
+  function roll() {
+    if (phase !== "roll") return;
+    phase = "rolling";
+    rollStarted = performance.now();
+    clearSlots();
+    setStatus("Rolling…");
+    render();
+
+    // Used dice come back from the front edge of the table.
+    // Bias the throw toward the back so dice rarely come to rest on the slots.
+    dice.forEach(restoreDie);
+    for (const { body } of dice) {
+      body.wakeUp();
+      body.velocity.set(rand(-2, 2), rand(10, 13), rand(-3, -1));
+      body.angularVelocity.set(rand(-20, 20), rand(-20, 20), rand(-20, 20));
+    }
+  }
+
+  function onSettled() {
+    for (const die of dice) die.value = FACE_VALUES[topIndex(die.body)];
+    phase = "place";
+    const burn = burnUsed ? "" : " (or burn one)";
+    setStatus(`You rolled ${dice[0].value} and ${dice[1].value}. Drag one onto + and the other onto −${burn}.`);
+    render();
+  }
+
+  function placeInSlot(die, slot) {
+    slot.die = die;
+    die.slot = slot;
+
+    // A used die leaves the table: out of the physics world, shrinking away on its slot
+    const burn = slot.kind === "burn";
+    squareUp(die.body);
+    die.body.position.set(slot.x, DIE_SIZE / 2, slot.z);
+    world.removeBody(die.body);
+    die.inWorld = false;
+    die.vanish = { start: performance.now(), ms: burn ? 450 : 200, burn };
+
+    let msg;
+    if (burn) {
+      burnUsed = true;
+      msg = `Burned the ${die.value}, no more burns this corner`;
+    } else {
+      const before = gear;
+      const delta = gearDelta(slot.kind, die.value);
+      gear = THREE.MathUtils.clamp(gear + delta, MIN_GEAR, MAX_GEAR);
+      bumpKnob();
+      floatNumber(slot, gear - before);
+      const sign = delta > 0 ? "+" : delta < 0 ? "−" : "±";
+      msg = `${die.value} on ${slot.symbol}: gear ${before} → ${gear} (${sign}${Math.abs(delta)})`;
+    }
+
+    // Hitting the corner speed ends the corner right away, even with a die left over
+    if (inTarget(gear) || dice.every((d) => d.slot)) {
+      phase = "resolve";
+      setStatus(msg);
+      setTimeout(endTurn, 450);
+    } else {
+      const open = slots.filter(slotOpen).map((s) => s.name).join(" or ");
+      setStatus(`${msg}. Now place the other die on ${open}.`);
+    }
+    render();
+  }
+
+  function endTurn() {
+    if (inTarget(gear)) {
+      cleared++;
+      results.push("cleared");
+      setStatus(`Corner cleared at ${kmh(gear)} km/h!`, "good");
+      showPopup("Corner cleared!", `${kmh(gear)} km/h in gear ${gear}`, "good");
+    } else {
+      turnsLeft--;
+      if (turnsLeft > 0) {
+        phase = "roll";
+        setStatus(`${turnsLeft} turn${turnsLeft > 1 ? "s" : ""} left in this corner. Roll!`);
+        render();
+        return;
+      }
+      lives--;
+      results.push("missed");
+      const needed = `${speedText(target.lo, target.hi)} km/h`;
+      setStatus(`Missed! You were at ${kmh(gear)} km/h, the corner needed ${needed}.`, "bad");
+      showPopup("Missed the corner!", `${kmh(gear)} km/h, needed ${needed}`, "bad");
+    }
+
+    if (lives === 0) {
+      phase = "over";
+      const corners = `${cleared} corner${cleared === 1 ? "" : "s"}`;
+      setStatus(`Crashed out. You cleared ${corners}.`, "bad");
+      showPopup("Crashed out!", `${corners} cleared`, "bad");
+    } else if (results.length === TOTAL_CORNERS) {
+      phase = "over";
+      const livesLeft = `${lives} li${lives === 1 ? "fe" : "ves"} left`;
+      setStatus(`Race won! You cleared ${cleared} of ${TOTAL_CORNERS} corners with ${livesLeft}.`, "good");
+      showPopup("🏆 You won the race! 🏆", `${cleared} of ${TOTAL_CORNERS} corners cleared · ${livesLeft}`, "win", 5000);
+      confetti();
+    } else {
+      nextCorner();
+      phase = "roll";
+    }
+    render();
+  }
+
+  rollBtn.addEventListener("click", roll);
+  restartBtn.addEventListener("click", restart);
+  document.addEventListener("keydown", (e) => {
+    if (e.code === "Space" && e.target.tagName !== "BUTTON") {
+      e.preventDefault();
+      if (phase === "over") restart();
+      else roll();
+    }
+  });
+
+  // ---------- Loop ----------
+  function resize() {
+    const w = container.clientWidth;
+    const h = container.clientHeight;
+    renderer.setSize(w, h, false);
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+  }
+  new ResizeObserver(resize).observe(container);
+  resize();
+
+  renderer.setAnimationLoop(() => {
+    if (drag) {
+      // Chase the pointer target; the lag smooths out jittery mouse input
+      const { body } = drag.die;
+      body.velocity.copy(drag.target.vsub(body.position).scale(15));
+      body.angularVelocity.setZero();
+    }
+
+    world.fixedStep();
+    const now = performance.now();
+    for (const die of dice) {
+      die.mesh.position.copy(die.body.position);
+      die.mesh.quaternion.copy(die.body.quaternion);
+      if (die.vanish) animateVanish(die, now);
+    }
+    placePreview();
+
+    if (phase === "rolling") {
+      const elapsed = performance.now() - rollStarted;
+      const settled = dice.every(({ body }) => body.sleepState === CANNON.Body.SLEEPING);
+      // Short grace period so dice that haven't left the table yet don't count as settled
+      if ((settled && elapsed > 300) || elapsed > 4000) onSettled();
+    }
+
+    renderer.render(scene, camera);
+  });
+
+  restart();
+</script>
+</body>
+</html>
