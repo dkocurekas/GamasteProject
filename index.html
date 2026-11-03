@@ -815,6 +815,7 @@
 
   function restoreDie(die, i) {
     die.vanish = null;
+    die.snap = null;
     die.mesh.visible = true;
     die.mesh.scale.setScalar(1);
     for (const m of die.materials) {
@@ -853,7 +854,7 @@
   const clampRestZ = (z) => THREE.MathUtils.clamp(z, -ARENA_Z + 0.6, DICE_WALL_Z - 0.6);
   let drag = null; // { die, offset, target }
 
-  const canDrag = (die) => phase === "place" && !die.slot;
+  const canDrag = (die) => phase === "place" && !die.slot && !die.snap;
 
   function setPointer(e) {
     const r = canvas.getBoundingClientRect();
@@ -888,7 +889,9 @@
     drag = {
       die,
       offset: { x: body.position.x - point.x, z: body.position.z - point.z },
-      target: new CANNON.Vec3(body.position.x, HOVER_Y, body.position.z)
+      target: new CANNON.Vec3(body.position.x, HOVER_Y, body.position.z),
+      base: squaredQuat(body), // flat, current face up: the swing is applied on top of this
+      swing: { x: 0, z: 0, wx: 0, wz: 0, yaw: 0, yawVel: 0, last: performance.now() }
     };
     canvas.style.cursor = "grabbing";
   });
@@ -953,10 +956,7 @@
   function release() {
     if (!drag) return;
     const { die, target } = drag;
-    const { body } = die;
-    body.type = CANNON.Body.DYNAMIC;
-    body.allowSleep = true;
-    body.wakeUp();
+    die.body.allowSleep = true;
     drag = null;
     canvas.style.cursor = "";
     for (const slot of slots) slot.hover = false;
@@ -971,29 +971,110 @@
   canvas.addEventListener("pointerup", release);
   canvas.addEventListener("pointercancel", release);
 
-  // Rotate the die so its current top face points straight up, keeping the same value
-  function squareUp(body) {
+  // A held die swings like it hangs from the pointer: it leans into the direction it's moving
+  // on a spring (so it wobbles when it stops) and spins as it's swept sideways. The lean stays
+  // well under 45°, so the top face never changes while it's held.
+  const LEAN = 0.05; // lean (rad) per unit of speed
+  const MAX_LEAN = 0.55; // ~31°
+  const LEAN_STIFF = 140;
+  const LEAN_DAMP = 7; // underdamped: a couple of wobbles before it hangs straight
+  const SPIN = -0.45; // yaw rate per unit of sideways speed; moving right turns it clockwise
+
+  function swingHeld(d, now) {
+    const s = d.swing;
+    const dt = Math.min((now - s.last) / 1000, 0.05);
+    s.last = now;
+    const { body } = d.die;
+    const v = body.velocity;
+
+    // Tilt is an axis-angle vector in the table plane; leaning toward v means an axis of up × v
+    let tx = v.z * LEAN, tz = -v.x * LEAN;
+    const want = Math.hypot(tx, tz);
+    if (want > MAX_LEAN) { tx *= MAX_LEAN / want; tz *= MAX_LEAN / want; }
+    s.wx += ((tx - s.x) * LEAN_STIFF - s.wx * LEAN_DAMP) * dt;
+    s.wz += ((tz - s.z) * LEAN_STIFF - s.wz * LEAN_DAMP) * dt;
+    s.x += s.wx * dt;
+    s.z += s.wz * dt;
+    const angle = Math.hypot(s.x, s.z);
+    if (angle > MAX_LEAN) { s.x *= MAX_LEAN / angle; s.z *= MAX_LEAN / angle; }
+
+    s.yawVel += (v.x * SPIN - s.yawVel) * Math.min(6 * dt, 1);
+    s.yaw += s.yawVel * dt;
+
+    const tilt = new CANNON.Quaternion();
+    const a = Math.min(angle, MAX_LEAN);
+    if (a > 1e-4) tilt.setFromAxisAngle(new CANNON.Vec3(s.x / angle, 0, s.z / angle), a);
+    const yaw = new CANNON.Quaternion().setFromAxisAngle(UP, s.yaw);
+    body.quaternion.copy(tilt.mult(yaw).mult(d.base));
+  }
+
+  // Orientation with the die's current top face pointing straight up, keeping the same value
+  function squaredQuat(body) {
     const up = body.quaternion.vmult(FACE_NORMALS[topIndex(body)]);
-    body.quaternion.copy(new CANNON.Quaternion().setFromVectors(up, UP).mult(body.quaternion));
+    return new CANNON.Quaternion().setFromVectors(up, UP).mult(body.quaternion);
+  }
+
+  function squareUp(body) {
+    body.quaternion.copy(squaredQuat(body));
     body.velocity.setZero();
     body.angularVelocity.setZero();
   }
 
-  // Square the die up and drop it straight down, clear of the other die
-  function setDown({ body }) {
-    squareUp(body);
-    body.position.z = clampRestZ(body.position.z);
-    const otherDie = dice.find((d) => d.body !== body);
-    if (!otherDie.inWorld) return;
-    const other = otherDie.body;
-    let dx = body.position.x - other.position.x;
-    let dz = body.position.z - other.position.z;
-    const dist = Math.hypot(dx, dz);
-    const minDist = DIE_SIZE * 1.5;
-    if (dist < minDist) {
-      if (dist < 1e-3) { dx = 1; dz = 0; } else { dx /= dist; dz /= dist; }
-      body.position.x = clampX(other.position.x + dx * minDist);
-      body.position.z = clampRestZ(other.position.z + dz * minDist);
+  // Slide the die flat onto the table, clear of the other die, then freeze it there. Physics
+  // never drops it, so it always ends up flush and can't tumble (or be knocked) onto another face.
+  const SNAP_MS = 220;
+
+  function setDown(die) {
+    const { body } = die;
+    const to = new CANNON.Vec3(clampX(body.position.x), DIE_SIZE / 2, clampRestZ(body.position.z));
+    const otherDie = dice.find((d) => d !== die);
+    if (otherDie.inWorld) {
+      const other = otherDie.snap ? otherDie.snap.toPos : otherDie.body.position;
+      let dx = to.x - other.x;
+      let dz = to.z - other.z;
+      const dist = Math.hypot(dx, dz);
+      const minDist = DIE_SIZE * 1.5;
+      if (dist < minDist) {
+        if (dist < 1e-3) { dx = 1; dz = 0; } else { dx /= dist; dz /= dist; }
+        to.x = clampX(other.x + dx * minDist);
+        to.z = clampRestZ(other.z + dz * minDist);
+      }
+    }
+    body.type = CANNON.Body.KINEMATIC;
+    body.velocity.setZero();
+    body.angularVelocity.setZero();
+    // A die let go from hover height drops and bounces; one laid flat after a roll just settles
+    const dropped = body.position.y - to.y > 0.3;
+    die.snap = {
+      start: performance.now(),
+      ms: dropped ? 450 : SNAP_MS,
+      dropped,
+      fromPos: body.position.clone(),
+      fromQuat: body.quaternion.clone(),
+      toPos: to,
+      toQuat: squaredQuat(body),
+    };
+  }
+
+  // Ease-out with two shrinking hops at the end: 0 → 1, touching 1 at t = 0.5, 0.8 and 1
+  function bounce(t) {
+    if (t < 0.5) return (t / 0.5) ** 2;
+    if (t < 0.8) return 1 - 0.12 * Math.sin(((t - 0.5) / 0.3) * Math.PI);
+    return 1 - 0.03 * Math.sin(((t - 0.8) / 0.2) * Math.PI);
+  }
+
+  function animateSnap(die, now) {
+    const { body, snap } = die;
+    const t = Math.min((now - snap.start) / snap.ms, 1);
+    const e = 1 - (1 - t) ** 3;
+    snap.fromPos.lerp(snap.toPos, e, body.position);
+    if (snap.dropped) body.position.y = snap.fromPos.y + (snap.toPos.y - snap.fromPos.y) * bounce(t);
+    snap.fromQuat.slerp(snap.toQuat, e, body.quaternion);
+    if (t === 1) {
+      // Static until the next roll: the held die (kinematic) passes over it without a nudge
+      die.snap = null;
+      body.type = CANNON.Body.STATIC;
+      body.aabbNeedsUpdate = true;
     }
   }
 
@@ -1311,6 +1392,7 @@
       if (die.inWorld) world.removeBody(die.body);
       die.inWorld = false;
       die.vanish = null;
+      die.snap = null;
       die.mesh.visible = false;
     }
   }
@@ -1343,6 +1425,7 @@
     // Bias the throw toward the back so dice rarely come to rest on the slots.
     dice.forEach(restoreDie);
     for (const { body } of dice) {
+      body.type = CANNON.Body.DYNAMIC; // a die left on the table from last turn is frozen
       body.wakeUp();
       body.velocity.set(rand(-2, 2), rand(10, 13), rand(-3, -1));
       body.angularVelocity.set(rand(-20, 20), rand(-20, 20), rand(-20, 20));
@@ -1350,7 +1433,12 @@
   }
 
   function onSettled() {
-    for (const die of dice) die.value = FACE_VALUES[topIndex(die.body)];
+    // Read each value, then lay the die flush with that face up: on time-out a die can still be
+    // tilted against a wall or the other die
+    for (const die of dice) {
+      die.value = FACE_VALUES[topIndex(die.body)];
+      setDown(die);
+    }
     phase = "place";
     const burn = burnUsed ? "" : " (or burn one)";
     setStatus(`You rolled ${dice[0].value} and ${dice[1].value}. Drag one onto + and the other onto −${burn}.`);
@@ -1470,8 +1558,10 @@
       body.angularVelocity.setZero();
     }
 
-    world.fixedStep();
     const now = performance.now();
+    if (drag) swingHeld(drag, now);
+    for (const die of dice) if (die.snap) animateSnap(die, now);
+    world.fixedStep();
     for (const die of dice) {
       die.mesh.position.copy(die.body.position);
       die.mesh.quaternion.copy(die.body.quaternion);
