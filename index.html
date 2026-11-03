@@ -1487,6 +1487,14 @@
     if (inTarget(gear)) {
       cleared++;
       results.push("cleared");
+      // Hitting the speed early can leave a die unused on the table: shrink it away too
+      for (const die of dice) {
+        if (die.slot || !die.inWorld) continue;
+        world.removeBody(die.body);
+        die.inWorld = false;
+        die.snap = null;
+        die.vanish = { start: performance.now(), ms: 300, burn: false };
+      }
       setStatus(`Corner cleared at ${kmh(gear)} km/h!`, "good");
       showPopup("Corner cleared!", `${kmh(gear)} km/h in gear ${gear}`, "good");
     } else {
