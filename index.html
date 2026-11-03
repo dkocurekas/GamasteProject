@@ -174,6 +174,22 @@
     height: auto;
     filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.45));
   }
+  /* Tyre smoke while drifting through a cleared corner, dirt when running wide on a miss */
+  .puff {
+    position: absolute;
+    width: 14px;
+    height: 14px;
+    margin: -7px 0 0 -7px;
+    border-radius: 50%;
+    background: rgba(233, 236, 239, 0.75);
+    pointer-events: none;
+    animation: puff 0.7s ease-out forwards;
+  }
+  .puff.dirt { background: rgba(134, 94, 52, 0.85); }
+  @keyframes puff {
+    from { opacity: 0.9; transform: scale(0.4); }
+    to { opacity: 0; transform: scale(2.4); }
+  }
 
   .table {
     position: relative;
@@ -985,7 +1001,7 @@
   const rand = (min, max) => min + Math.random() * (max - min);
   const randInt = (min, max) => Math.floor(rand(min, max + 1));
 
-  let phase = "roll"; // roll → rolling → place → resolve → roll …, or over
+  let phase = "roll"; // roll → rolling → place → resolve → (exit →) roll …, or over
   let gear, target, lives, cleared, turnsTotal, turnsLeft;
   let results = []; // "cleared" or "missed" for each corner driven so far
   let burnUsed = false; // the burn slot works once per corner
@@ -1126,8 +1142,8 @@
     segments.forEach((s, i) => s.classList.toggle("done", i > 0 && i <= used));
 
     // The car waits a segment back and drives into the next one when the dice are rolled
-    const inTurn = phase === "rolling" || phase === "place" || phase === "resolve";
-    const at = used + (inTurn ? 1 : 0);
+    const inTurn = phase === "rolling" || phase === "place" || phase === "resolve" || phase === "exit";
+    const at = Math.min(used + (inTurn ? 1 : 0), segments.length - 1);
     carEl.style.bottom = ((at + 0.5) / segments.length) * 100 + "%";
     if (carReset) {
       carEl.style.transition = "none";
@@ -1143,19 +1159,22 @@
   const CORNER_H = 80;
   const BEND_TIGHT = 12; // centreline radius in the lowest gear (inner edge is a point)
   const BEND_WIDE = 170; // centreline radius in top gear
+  const BEND_Y = 70; // where the straight ends and the bend begins
   let cornerKey = "";
+  let cornerR = BEND_TIGHT; // centreline radius of the bend currently drawn
 
   function renderCorner() {
     const g = (target.lo + target.hi) / 2;
     const t = (g - MIN_GEAR) / (MAX_GEAR - MIN_GEAR);
     const r = BEND_TIGHT * Math.pow(BEND_WIDE / BEND_TIGHT, t);
+    cornerR = r;
     const key = r.toFixed(1);
     if (key === cornerKey) return;
     cornerKey = key;
 
     // Centreline runs up the middle, then turns 90° right around (cx, y0) and leaves the picture
     const half = CORNER_W / 2;
-    const y0 = 70;
+    const y0 = BEND_Y;
     const cx = half + r;
     const road = `M${half} ${CORNER_H + 4}V${y0}A${r} ${r} 0 0 1 ${cx} ${y0 - r}H${cx + 200}`;
 
@@ -1173,6 +1192,97 @@
       <path d="${road}" fill="none" stroke="#3a3f47" stroke-width="${CORNER_W - 6}"/>
       <path d="${road}" fill="none" stroke="#ffd43b" stroke-width="3" stroke-dasharray="9 7"/>
       ${sign}`;
+  }
+
+  // When a corner is over the car drives up into the bend and out of the picture: a cleared
+  // corner is a quick sideways drift in tyre smoke, a missed one is a spin onto the grass.
+  // Calls done() once the car is gone.
+  let exitAnim = null;
+  let puffTimer = 0;
+
+  function driveThroughCorner(result, done) {
+    if (matchMedia("(prefers-reduced-motion: reduce)").matches) return done();
+    const carSvg = carEl.firstElementChild;
+    const missed = result === "missed";
+    const laneRect = laneEl.getBoundingClientRect();
+    const carRect = carEl.getBoundingClientRect();
+    const s = cornerEl.clientWidth / CORNER_W; // SVG units → px
+    // Distance from the car up to where the bend begins, and the bend's centreline radius
+    const rise = carRect.top + carRect.height / 2 - laneRect.top + (CORNER_H - BEND_Y) * s;
+    const r = cornerR * s;
+    const at = (offset, x, y, deg, easing = "linear") =>
+      ({ offset, easing, transform: `translate(${x}px, ${y}px) rotate(${deg}deg)` });
+    const exit = at(1, r + 160, -(rise + r), 90); // off the picture along the road out of the bend
+
+    let frames, ms, puffs;
+    if (missed) {
+      // Arrives too fast, turns in late and spins: ends up backwards on the grass on the outside
+      // of the bend, sits there for a moment, then turns round and creeps off
+      const x = -(CORNER_W / 2 - 14) * s; // resting spot on the outer edge
+      const y = -(rise + Math.min(r * 0.5 + 24 * s, 48 * s));
+      frames = [
+        at(0, 0, 0, 0),
+        at(0.16, 0, -rise, 0),
+        at(0.26, x * 0.4, (y - rise) / 2, -20),
+        at(0.36, x * 0.85, y + 6, 115),
+        at(0.44, x, y, 200),
+        at(0.47, x + 3, y - 2, 190), // thump as it stops
+        at(0.5, x - 2, y + 1, 198),
+        at(0.53, x, y, 195),
+        at(0.7, x, y, 195),
+        at(0.84, x * 0.3 + r * 0.3, y - 6, 120, "ease-in"),
+        exit,
+      ];
+      ms = 2600;
+      puffs = [0.16, 0.5];
+    } else {
+      // Run-up, then a drift around the bend (centre at (r, -rise)), then away right.
+      // Oversteer: the nose points well into the corner, caught with a flick at the exit.
+      frames = [at(0, 0, 0, 0)];
+      const STEPS = 16;
+      for (let i = 0; i <= STEPS; i++) {
+        const u = i / STEPS;
+        const a = (u * Math.PI) / 2;
+        const yaw = 40 * Math.sin(Math.PI * Math.min(u * 1.15, 1));
+        frames.push(at(0.15 + 0.65 * u, r - r * Math.cos(a), -(rise + r * Math.sin(a)), (a * 180) / Math.PI + yaw));
+      }
+      frames.push(exit);
+      ms = 1000;
+      puffs = [0.15, 0.85];
+    }
+    exitAnim = carSvg.animate(frames, { duration: ms, fill: "forwards" });
+
+    // Smoke or dirt left behind the car while it's sliding
+    const puffFrom = performance.now() + puffs[0] * ms;
+    const puffTo = performance.now() + puffs[1] * ms;
+    puffTimer = setInterval(() => {
+      const now = performance.now();
+      if (now < puffFrom || now > puffTo) return;
+      const lane = laneEl.getBoundingClientRect();
+      const c = carSvg.getBoundingClientRect();
+      const puff = document.createElement("div");
+      puff.className = missed ? "puff dirt" : "puff";
+      puff.style.left = c.left + c.width / 2 - lane.left + rand(-4, 4) + "px";
+      puff.style.top = c.top + c.height / 2 - lane.top + rand(-4, 4) + "px";
+      laneEl.insertBefore(puff, carEl); // under the car
+      puff.addEventListener("animationend", () => puff.remove());
+    }, 45);
+
+    exitAnim.onfinish = () => {
+      stopCornerExit();
+      done();
+    };
+  }
+
+  // Ends the exit animation early (new race) or tidies up once it has finished
+  function stopCornerExit() {
+    clearInterval(puffTimer);
+    if (!exitAnim) return;
+    const anim = exitAnim;
+    exitAnim = null;
+    anim.onfinish = null;
+    // Drop the held last frame only after the car has been put back on the start line
+    requestAnimationFrame(() => anim.cancel());
   }
 
   function bumpKnob() {
@@ -1206,6 +1316,7 @@
   }
 
   function restart() {
+    stopCornerExit();
     gear = START_GEAR;
     lives = START_LIVES;
     cleared = 0;
@@ -1305,6 +1416,13 @@
       showPopup("Missed the corner!", `${kmh(gear)} km/h, needed ${needed}`, "bad");
     }
 
+    // The car drives through the corner before the next one (or the race result) comes up
+    phase = "exit";
+    render();
+    driveThroughCorner(results[results.length - 1], finishCorner);
+  }
+
+  function finishCorner() {
     if (lives === 0) {
       phase = "over";
       const corners = `${cleared} corner${cleared === 1 ? "" : "s"}`;
